@@ -1,54 +1,68 @@
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda"
-import { S3Client, HeadObjectCommand } from "@aws-sdk/client-s3"
+import axios from "axios"
 
-const bucket = process.env.AWS_BUCKET_NAME
-const region = process.env.AWS_REGION_NAME
-const lambdaClient = new LambdaClient({ region })
-const s3Client = new S3Client({ region })
+const SUPPORTED_FILE_TYPES = ["audio/mpeg", "audio/mp3", "audio/x-m4a"] // TODO: add more
+const MAX_FILE_SIZE = 200_000_000 // 200 MB
+
+const lambdaClient = new LambdaClient({
+  region: process.env.AWS_REGION_NAME,
+})
 
 export const handler = async (event) => {
-  const { dbId, fileName } = getParams(event)
-  if (fileName == null) {
-    return toResponse(500, { error: "no file" })
-  }
-
-  const isFileValid = await validateFile(fileName)
-  if (!isFileValid) {
-    return toResponse(500, { error: "invalid file" })
-  }
-
-  const audioUrl = `https://${bucket}.s3.amazonaws.com/${fileName}`
-  const input = {
-    FunctionName: "hello-world",
-    InvocationType: "Event",
-    Payload: JSON.stringify({ audioUrl, dbId }),
-  }
-
   try {
-    const command = new InvokeCommand(input)
+    const { dbId, audioUrl } = getParams(event)
+    if (dbId == null || audioUrl == null) {
+      return errorResponse("missing params")
+    }
+
+    const { contentType, contentLength } = await getFileMetadata(audioUrl)
+    if (
+      contentType == null ||
+      contentLength == null ||
+      !SUPPORTED_FILE_TYPES.includes(contentType) ||
+      contentLength > MAX_FILE_SIZE
+    ) {
+      console.log("invalid file", { contentType, contentLength })
+      return errorResponse("invalid file", { contentType, contentLength })
+    }
+
+    const lambdaInput = {
+      FunctionName: "hearsay-transcribe-main",
+      InvocationType: "Event",
+      Payload: JSON.stringify({ audioUrl, dbId }),
+    }
+
+    const command = new InvokeCommand(lambdaInput)
     const response = await lambdaClient.send(command)
-    const status = response.StatusCode
-
-    return toResponse(200, { status })
+    console.log(`lambda invoke status code: ${response.StatusCode}`)
+    return makeResponse(200, { status: "success" })
   } catch (error) {
-    return toResponse(500, { error: error.message ?? "unknown error" })
+    console.log("error", error)
+    return errorResponse(error.message ?? "unknown error")
   }
 }
 
-function toResponse(statusCode, body) {
-  return {
-    statusCode,
-    body: JSON.stringify(body),
-  }
+function makeResponse(statusCode, body) {
+  return { statusCode, body: JSON.stringify(body) }
 }
 
-async function validateFile(fileName) {
+function errorResponse(message, details = {}) {
+  return makeResponse(500, {
+    status: "error",
+    error: message,
+    ...details,
+  })
+}
+
+async function getFileMetadata(url) {
   try {
-    const command = new HeadObjectCommand({ Bucket: bucket, Key: fileName })
-    const response = await s3Client.send(command)
-    return response.$metadata.httpStatusCode === 200
+    const response = await axios.head(url)
+    const contentType = response.headers["content-type"]
+    const contentLength = Number(response.headers["content-length"])
+    return { contentType, contentLength }
   } catch (error) {
-    return false
+    console.log("error fetching file metadata: ", error)
+    return {}
   }
 }
 
@@ -57,14 +71,16 @@ function getParams(event) {
     return {}
   }
 
-  const body = parseJSON(event.body)
-  return { ...event.queryStringParameters, ...body }
+  return {
+    ...event.queryStringParameters,
+    ...parseJSON(event.body),
+  }
 }
 
 function parseJSON(content) {
   try {
     return JSON.parse(content ?? "{}")
   } catch (_) {
-    return {}
+    return
   }
 }
