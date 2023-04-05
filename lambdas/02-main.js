@@ -8,6 +8,7 @@ import https from "https"
 import mime from "mime"
 import path from "path"
 import { v4 as uuidv4 } from "uuid"
+import { MAX_FILE_SIZE, SUPPORTED_FILE_TYPES } from "./utils"
 
 const AWS_REGION = process.env.AWS_REGION_NAME
 const S3_BUCKET = process.env.S3_BUCKET_NAME
@@ -16,9 +17,6 @@ const TEMP_DIR = process.env.TEMP_DIR
 const SEGMENT_PREFIX = "segment-"
 const SEGMENT_LENGTH = 60 * 20 // 20 minutes
 const SPLIT_FILE_SIZE_THRESHOLD = 24_000_000 // 24 MB
-
-const SUPPORTED_FILE_TYPES = ["audio/mpeg", "audio/mp3", "audio/x-m4a"] // TODO: add more
-const MAX_FILE_SIZE = 200_000_000 // 200 MB
 
 const supabaseClient = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
 const s3Client = new S3Client({ region: AWS_REGION, useAccelerateEndpoint: true })
@@ -56,7 +54,7 @@ export const handler = async (event) => {
 
     // save to s3 (and update db)
     const s3Url = await uploadLocalFileToS3(audioPath, fileName)
-    await updateDatabase(dbId, { audio_url: s3Url })
+    await updateDatabase(dbId, { audioUrl: s3Url })
 
     // split audio into smaller files if needed
     const files = await maybeSplitFile(audioPath, contentLength)
@@ -88,14 +86,14 @@ function errorResponse(message) {
 }
 
 function updateDatabase(id, fields) {
-  return supabaseClient.from("transcriptions").update(fields).eq("id", id)
+  return supabaseClient.from("audio").update(fields).eq("id", id)
 }
 
 async function getFileMetadata(url) {
   try {
-    const response = await axios.head(url)
-    const contentType = response.headers["content-type"]
-    const contentLength = Number(response.headers["content-length"])
+    const { headers } = await axios.head(url)
+    const contentType = headers["content-type"]
+    const contentLength = Number(headers["content-length"]) || undefined
     return { contentType, contentLength }
   } catch (error) {
     console.log("error fetching file metadata: ", error)

@@ -1,8 +1,6 @@
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda"
 import axios from "axios"
-
-const SUPPORTED_FILE_TYPES = ["audio/mpeg", "audio/mp3", "audio/x-m4a"] // TODO: add more
-const MAX_FILE_SIZE = 200_000_000 // 200 MB
+import { MAX_FILE_SIZE, SUPPORTED_FILE_TYPES } from "./utils"
 
 const lambdaClient = new LambdaClient({
   region: process.env.AWS_REGION_NAME,
