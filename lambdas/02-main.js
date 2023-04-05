@@ -4,7 +4,6 @@ import { createClient } from "@supabase/supabase-js"
 import axios from "axios"
 import child_process from "child_process"
 import fs from "fs"
-import https from "https"
 import mime from "mime"
 import path from "path"
 import { v4 as uuidv4 } from "uuid"
@@ -52,6 +51,12 @@ export const handler = async (event) => {
     const audioPath = `${TEMP_DIR}/${fileName}`
     await saveUrlToLocalFile(audioUrl, audioPath)
 
+    var { size } = fs.statSync(audioPath)
+    console.log(`orig size: ${contentLength}; local size: ${size}`)
+    if (size === 0) {
+      throw new Error("empty file")
+    }
+
     // save to s3 (and update db)
     const s3Url = await uploadLocalFileToS3(audioPath, fileName)
     await updateDatabase(dbId, { audioUrl: s3Url })
@@ -67,7 +72,7 @@ export const handler = async (event) => {
     await updateDatabase(dbId, { results: { status: "SUCCESS", results } })
 
     const taskDuration = process.hrtime(taskStart)[0]
-    const output = { audioUrl, taskDuration, numFiles: files.length }
+    const output = { s3Url, taskDuration, numFiles: files.length }
     console.log("output: ", output)
     return makeResponse(200, { status: "success", output })
   } catch (error) {
@@ -106,13 +111,13 @@ function getExtension(contentType) {
   return ext === "mpga" ? "mp3" : ext // TODO: revisit this
 }
 
-function saveUrlToLocalFile(url, filePath) {
-  return new Promise((resolve) => {
-    const stream = fs.createWriteStream(filePath)
-    https.get(url, (response) => {
-      response.pipe(stream)
-      stream.on("finish", resolve)
-    })
+async function saveUrlToLocalFile(url, filePath) {
+  const response = await axios({ method: "get", url, responseType: "stream" })
+  const stream = fs.createWriteStream(filePath)
+  response.data.pipe(stream)
+  return new Promise((resolve, reject) => {
+    stream.on("finish", resolve)
+    stream.on("error", reject)
   })
 }
 
