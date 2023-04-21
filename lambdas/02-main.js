@@ -28,7 +28,7 @@ export const handler = async (event) => {
 
   try {
     const taskStart = process.hrtime() // kick off timer
-    await updateDatabase(dbId, { results: { status: "RUNNING" } })
+    await updateDatabase(dbId, { transcription: { status: "RUNNING" } })
 
     // validate file type and size
     const { contentType, contentLength } = await getFileMetadata(audioUrl)
@@ -69,7 +69,7 @@ export const handler = async (event) => {
 
     // transcribe + update db (TODO: make sure we're not sending too many concurrent requests)
     const results = await Promise.all(files.map((filePath) => transcribe(filePath, contentType)))
-    await updateDatabase(dbId, { results: { status: "SUCCESS", results } })
+    await updateDatabase(dbId, { transcription: { status: "SUCCESS", output: results } })
 
     const taskDuration = process.hrtime(taskStart)[0]
     const output = { s3Url, taskDuration, numFiles: files.length }
@@ -77,7 +77,7 @@ export const handler = async (event) => {
     return makeResponse(200, { status: "success", output })
   } catch (error) {
     const reason = error.message ?? "unknown error"
-    await updateDatabase(dbId, { results: { status: "FAILED", reason } })
+    await updateDatabase(dbId, { transcription: { status: "FAILED", reason } })
     return errorResponse(reason)
   }
 }
@@ -91,7 +91,7 @@ function errorResponse(message) {
 }
 
 function updateDatabase(id, fields) {
-  return supabaseClient.from("audio").update(fields).eq("id", id)
+  return supabaseClient.from("transcriptions").update(fields).eq("id", id)
 }
 
 async function getFileMetadata(url) {
