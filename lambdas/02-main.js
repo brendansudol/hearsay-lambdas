@@ -67,15 +67,23 @@ export const handler = async (event) => {
       throw new Error("no files to transcribe")
     }
 
-    // transcribe + update db (TODO: make sure we're not sending too many concurrent requests)
-    const results = await Promise.all(files.map((filePath) => transcribe(filePath, contentType)))
-    await updateDatabase(dbId, { transcription: { status: "SUCCESS", output: results } })
+    // transcribe + summarize + update db
+    // (TODO: make sure we're not sending too many concurrent requests)
+    const transcript = await Promise.all(files.map((filePath) => transcribe(filePath, contentType)))
+    const summary = await summarize(transcript)
+
+    await updateDatabase(dbId, {
+      transcription: { status: "SUCCESS", output: transcript },
+      title: summary?.title ?? null,
+      summary: summary?.paragraph ?? null,
+    })
 
     const taskDuration = process.hrtime(taskStart)[0]
     const output = { s3Url, taskDuration, numFiles: files.length }
     console.log("output: ", output)
     return makeResponse(200, { status: "success", output })
   } catch (error) {
+    console.log(error)
     const reason = error.message ?? "unknown error"
     await updateDatabase(dbId, { transcription: { status: "FAILED", reason } })
     return errorResponse(reason)
@@ -185,11 +193,81 @@ async function transcribe(fileName, fileType) {
   formData.append("response_format", "verbose_json")
   formData.append("file", blob, fileName)
 
-  const response = await axios.post("https://api.openai.com/v1/audio/transcriptions", formData, {
-    headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-  })
+  const config = { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` } }
+  const response = await axios.post(
+    "https://api.openai.com/v1/audio/transcriptions",
+    formData,
+    config
+  )
 
   return { fileName, results: response.data }
+}
+
+const SUMMARY_PROMPT = `Please summarize the following transcript into one paragraph. Ignore advertisements. Here is the transcript:`
+const TITLE_PROMPT = `Please summarize the following transcript into a short phrase that could be used as a title for the transcript. Ignore advertisements. Here is the transcript:`
+
+async function summarize(results) {
+  try {
+    const textChunks = results.map((r) => r.results.text)
+    if (textChunks.length === 0) return
+
+    const transcript = formatTranscriptForPrompt(textChunks)
+    const [title, paragraph] = await Promise.all([
+      callGpt4(`${TITLE_PROMPT}\n\n\n${transcript}`),
+      callGpt4(`${SUMMARY_PROMPT}\n\n\n${transcript}`),
+    ])
+
+    return { title, paragraph }
+  } catch (error) {
+    console.log("error during summarization: ", error)
+    return
+  }
+}
+
+async function callGpt4(prompt) {
+  const response = await axios.post(
+    "https://api.openai.com/v1/chat/completions",
+    {
+      model: "gpt-4",
+      messages: [
+        { role: "system", content: "You are a helpful assistant." },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.7,
+    },
+    {
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+    }
+  )
+
+  return response.data?.choices?.[0]?.message.content
+}
+
+const MAX_CHARS = 12_000
+const MIN_CHARS_FOR_FIRST_CHUNK = 4_000
+const MAX_CHUNKS_TO_USE = 6
+const JOIN_STR = " ... "
+
+function formatTranscriptForPrompt(textChunks) {
+  const n = Math.min(textChunks.length, MAX_CHUNKS_TO_USE)
+  const charsPerChunk = Math.floor(MAX_CHARS / n)
+
+  // if there are a lot of chunks, use more text from first chunk
+  // since it probably has the most context re: what audio is about
+  if (charsPerChunk < MIN_CHARS_FOR_FIRST_CHUNK) {
+    const [first, ...rest] = textChunks
+    const firstResult = sliceText(first, MIN_CHARS_FOR_FIRST_CHUNK)
+
+    const restSize = Math.floor((MAX_CHARS - firstResult.length) / rest.length)
+    const restResults = rest.map((t) => sliceText(t, restSize))
+
+    return [firstResult, ...restResults].join(JOIN_STR)
+  }
+
+  // otherwise, use the same amount of text from each chunk
+  return textChunks.map((t) => sliceText(t, charsPerChunk)).join(JOIN_STR)
+}
+
+function sliceText(text, numChars) {
+  return text.length <= numChars ? text : text.slice(0, numChars) + "..."
 }
