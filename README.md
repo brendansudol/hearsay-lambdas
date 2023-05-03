@@ -1,1 +1,1 @@
-**`stay tuned!`**
+This is the background task accompaniment to https://github.com/brendansudol/hearsay-app. It handles parsing and validating a given audio file, splitting it into smaller chunks if necessary, transcribing (Whisper) and summarizing (GPT-4) via OpenAI APIs, and storing results to a database (Supabase).
